@@ -1,0 +1,58 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# --- Virtual environments ---
+venv/
+env/
+.venv/
+
+# --- Node.js (if any future project uses it) ---
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# --- General development files ---
+*.log
+*.tmp
+*.swp
+*.swo
+
+# --- OS / Editor files ---
+.DS_Store
+Thumbs.db
+*.bak
+
+# --- Git ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Docker ---
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# --- Environment files ---
+.env
+.env.*
+*.secret
+secrets/
+certs/
+
+# --- Build / distribution directories ---
+dist/
+build/
+out/
+target/
+
+# --- Cache directories ---
+.cache/
+.mypy_cache/
+pytest_cache/
+
