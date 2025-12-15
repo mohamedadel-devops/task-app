@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    env_file:
+      - db.env
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - app_net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_net
+    restart: unless-stopped
+
+  backend:
+    image: mohammedrs/task-app-backend:${IMAGE_TAG:-latest}
+    env_file:
+      - db.env
+      - redis.env
+      - backend.env
+    # In production, nginx should be the only public entry.
+    # Keep this ONLY if you intentionally want direct access for debugging.
+    # ports:
+    #   - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    networks:
+      - app_net
+    restart: unless-stopped
+
+  worker:
+    image: mohammedrs/task-app-worker:${IMAGE_TAG:-latest}
+    env_file:
+      - db.env
+      - redis.env
+    depends_on:
+      - redis
+      - db
+    networks:
+      - app_net
+    restart: unless-stopped
+
+  nginx:
+    image: mohammedrs/task-app-nginx:${IMAGE_TAG:-latest}
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - backend
+    networks:
+      - app_net
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  redis_data:
+
+networks:
+  app_net:
+
