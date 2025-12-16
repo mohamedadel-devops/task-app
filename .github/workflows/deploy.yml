@@ -3,6 +3,12 @@ name: Build & Deploy (EC2)
 on:
   push:
     branches: ["main"]
+ 
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag (commit SHA) to deploy"
+        required: true
 
 permissions:
   contents: read
