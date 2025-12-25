@@ -55,7 +55,7 @@ def create_task(payload: TaskCreate):
     redis_client.lpush(QUEUE_NAME, task["id"])
 
     return {"message": "Task created", "task": task}
-
+c
 @app.get("/api/tasks")
 def list_tasks():
     conn = get_connection()
