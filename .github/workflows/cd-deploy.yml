@@ -1,0 +1,206 @@
+name: CD - Deploy to Staging then Production
+
+on:
+  workflow_run:
+    workflows: ["CI - Build & Push Backend Image"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_NAMESPACE: mohammedrs
+  IMAGE_NAME: task-app-backend
+  APP_DIR: /home/ubuntu/task-app
+  SERVICE_NAME: backend
+  HOST_PORT: "8000"
+  CONTAINER_PORT: "8000"
+  HEALTHCHECK_URL: "http://localhost:8000/"
+  HEALTHCHECK_RETRIES: "15"
+  HEALTHCHECK_SLEEP: "3"
+
+jobs:
+  deploy_staging:
+    name: Deploy to Staging
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Deploy to STAGING via SSH (with rollback)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            set -euo pipefail
+
+            SHA_TAG="${{ github.event.workflow_run.head_sha }}"
+            IMAGE="${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:${SHA_TAG}"
+            IMAGE_LATEST="${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest"
+
+            echo "Deploying STAGING tag: ${SHA_TAG}"
+            sudo mkdir -p "${{ env.APP_DIR }}"
+            cd "${{ env.APP_DIR }}"
+
+            # Save current tag (for rollback)
+            PREV_TAG="none"
+            if [ -f .current_tag ]; then
+              PREV_TAG="$(cat .current_tag)"
+            fi
+            echo "Previous tag: ${PREV_TAG}"
+
+            # Write docker-compose.yml (pull from Docker Hub)
+            cat > docker-compose.yml <<'EOF'
+            services:
+              backend:
+                image: ${DOCKER_IMAGE}
+                container_name: backend_app
+                ports:
+                  - "${HOST_PORT}:${CONTAINER_PORT}"
+                restart: unless-stopped
+            EOF
+
+            # Write runtime env file
+            cat > .runtime.env <<EOF
+            DOCKER_IMAGE=${IMAGE}
+            HOST_PORT=${{ env.HOST_PORT }}
+            CONTAINER_PORT=${{ env.CONTAINER_PORT }}
+            EOF
+
+            # Optional: login to Docker Hub (needed if repo is private)
+            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+              echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin >/dev/null 2>&1 || true
+            fi
+
+            echo "Pulling image..."
+            docker compose --env-file .runtime.env pull
+
+            echo "Starting container..."
+            docker compose --env-file .runtime.env up -d
+
+            echo "Health check..."
+            OK=0
+            for i in $(seq 1 "${{ env.HEALTHCHECK_RETRIES }}"); do
+              if curl -fsS "${{ env.HEALTHCHECK_URL }}" >/dev/null 2>&1; then
+                OK=1
+                break
+              fi
+              sleep "${{ env.HEALTHCHECK_SLEEP }}"
+            done
+
+            if [ "$OK" -eq 1 ]; then
+              echo "${SHA_TAG}" > .current_tag
+              echo "✅ STAGING deploy success."
+              exit 0
+            fi
+
+            echo "❌ Healthcheck failed. Rolling back..."
+            if [ "${PREV_TAG}" = "none" ]; then
+              echo "No previous tag stored. Attempting rollback to :latest"
+              ROLLBACK_IMAGE="${IMAGE_LATEST}"
+            else
+              ROLLBACK_IMAGE="${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:${PREV_TAG}"
+            fi
+
+            cat > .runtime.env <<EOF
+            DOCKER_IMAGE=${ROLLBACK_IMAGE}
+            HOST_PORT=${{ env.HOST_PORT }}
+            CONTAINER_PORT=${{ env.CONTAINER_PORT }}
+            EOF
+
+            docker compose --env-file .runtime.env pull
+            docker compose --env-file .runtime.env up -d
+
+            echo "Rollback completed to: ${ROLLBACK_IMAGE}"
+            exit 1
+
+  deploy_production:
+    name: Deploy to Production (Approval Required)
+    needs: deploy_staging
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Deploy to PRODUCTION via SSH (with rollback)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -euo pipefail
+
+            SHA_TAG="${{ github.event.workflow_run.head_sha }}"
+            IMAGE="${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:${SHA_TAG}"
+            IMAGE_LATEST="${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest"
+
+            echo "Deploying PRODUCTION tag: ${SHA_TAG}"
+            sudo mkdir -p "${{ env.APP_DIR }}"
+            cd "${{ env.APP_DIR }}"
+
+            PREV_TAG="none"
+            if [ -f .current_tag ]; then
+              PREV_TAG="$(cat .current_tag)"
+            fi
+            echo "Previous tag: ${PREV_TAG}"
+
+            cat > docker-compose.yml <<'EOF'
+            services:
+              backend:
+                image: ${DOCKER_IMAGE}
+                container_name: backend_app
+                ports:
+                  - "${HOST_PORT}:${CONTAINER_PORT}"
+                restart: unless-stopped
+            EOF
+
+            cat > .runtime.env <<EOF
+            DOCKER_IMAGE=${IMAGE}
+            HOST_PORT=${{ env.HOST_PORT }}
+            CONTAINER_PORT=${{ env.CONTAINER_PORT }}
+            EOF
+
+            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+              echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin >/dev/null 2>&1 || true
+            fi
+
+            docker compose --env-file .runtime.env pull
+            docker compose --env-file .runtime.env up -d
+
+            echo "Health check..."
+            OK=0
+            for i in $(seq 1 "${{ env.HEALTHCHECK_RETRIES }}"); do
+              if curl -fsS "${{ env.HEALTHCHECK_URL }}" >/dev/null 2>&1; then
+                OK=1
+                break
+              fi
+              sleep "${{ env.HEALTHCHECK_SLEEP }}"
+            done
+
+            if [ "$OK" -eq 1 ]; then
+              echo "${SHA_TAG}" > .current_tag
+              echo "✅ PRODUCTION deploy success."
+              exit 0
+            fi
+
+            echo "❌ Healthcheck failed. Rolling back..."
+            if [ "${PREV_TAG}" = "none" ]; then
+              ROLLBACK_IMAGE="${IMAGE_LATEST}"
+            else
+              ROLLBACK_IMAGE="${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:${PREV_TAG}"
+            fi
+
+            cat > .runtime.env <<EOF
+            DOCKER_IMAGE=${ROLLBACK_IMAGE}
+            HOST_PORT=${{ env.HOST_PORT }}
+            CONTAINER_PORT=${{ env.CONTAINER_PORT }}
+            EOF
+
+            docker compose --env-file .runtime.env pull
+            docker compose --env-file .runtime.env up -d
+
+            echo "Rollback completed to: ${ROLLBACK_IMAGE}"
+            exit 1
+
